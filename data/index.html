@@ -1,0 +1,245 @@
+<html>
+
+<head>
+    <title>Inverter/Battery Fan Control</title>
+
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+
+    <link data-react-helmet="true" rel="preload" as="style"
+        href="https://fonts.googleapis.com/css?family=Dosis:300,500,700|Solway:300,700&amp;display=swap">
+    <link data-react-helmet="true"
+        href="https://fonts.googleapis.com/css?family=Dosis:300,500,700|Solway:300,700&amp;display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" type="text/css" href="style.css">
+
+    <script language="javascript" src="dash-meter.js"></script>
+
+    <script language="javascript" type="text/javascript">
+        function onWindowResize() {
+            let meterCanvas = document.getElementById("meterCanvas");
+            meterCanvas.height = meterCanvas.width / 1.25;
+            meter.draw();
+        }
+
+        function getPaddingLeft(element) {
+            let px = window
+                .getComputedStyle(content, null)
+                .getPropertyValue("padding-left");
+            let nopx = px.substring(0, px.length - 2);
+            return parseInt(nopx);
+        }
+
+        function getPaddingRight(element) {
+            let px = window
+                .getComputedStyle(content, null)
+                .getPropertyValue("padding-right");
+            let nopx = px.substring(0, px.length - 2);
+            return parseInt(nopx);
+        }
+
+        function init() {
+            let meterCanvas = document.getElementById("meterCanvas");
+            meterCanvas.width = 250;
+            meterCanvas.height = meterCanvas.width;
+
+            meter = new DashMeter(meterCanvas, 2500);
+            meter.background = "#303030";
+            meter.foreground = "coral";
+            meter.unfilledColor = "#555555";
+            meter.smallTextColor = "rgb(160, 160, 160)";
+            meter.fontFamily = "Dosis, sans-serif";
+            meter.fontWeight = "300";
+            meter.value = "0";
+            meter.label = "RPM";
+
+            onWindowResize();
+
+            ourURL = window.location.href;
+            // console.log("ourURL = " + ourURL);
+            chop = 0;
+            if (ourURL.startsWith("http://")) {
+                chop = 7;
+            } else if (ourURL.startsWith("https://")) {
+                chop = 8;
+            } else {
+                // console.log("window.location.href is not an http URL");
+                document.getElementById('potVal').innerHTML = "<font color=\"red\">!! NO HOST !!</font>";
+            }
+
+            if (chop != 0) {
+                tmp = ourURL.slice(chop);
+                if ((idx = tmp.indexOf("/")) != -1) {
+                    ourHost = tmp.slice(0, idx);
+                    // console.log("ourHost = " + ourHost);
+
+                    url = "ws://" + ourHost + "/ws";
+                    // console.log("url = " + url);
+
+                    // Connect to WebSocket server
+                    wsConnect(url);
+                } else {
+                    // console.log("Could not determine hostname from window.location.href");
+                    document.getElementById('potVal').innerHTML = "<font color=\"red\">!! NO HOST !!</font>";
+                }
+            }
+
+            pwmMouseDown = false;
+        }
+
+        // Call this to connect to the WebSocket server
+        function wsConnect(url) {
+
+            // Connect to WebSocket server
+            websocket = new WebSocket(url);
+
+            // Assign callbacks
+            websocket.onopen = function (evt) { onOpen(evt) };
+            websocket.onclose = function (evt) { onClose(evt) };
+            websocket.onmessage = function (evt) { onMessage(evt) };
+            websocket.onerror = function (evt) { onError(evt) };
+        }
+
+        // Called when a WebSocket connection is established with the server
+        function onOpen(evt) {
+
+            // Log connection state
+            // console.log("Connected");
+
+            // // Get the current state of ??
+            // doSend("get??State");
+        }
+
+        // Called when the WebSocket connection is closed
+        function onClose(evt) {
+
+            // Log disconnection state
+            // console.log("Disconnected");
+
+            // Try to reconnect after a few seconds
+            setTimeout(function () { wsConnect(url) }, 2000);
+        }
+
+        // Called when a message is received from the server
+        function onMessage(evt) {
+
+            // Print out our received message
+            // console.log("Received: " + evt.data);
+            obj = JSON.parse(evt.data);
+            if ('fanOn' in obj) {
+                document.getElementById('fanOn').checked = obj.fanOn;
+            }
+
+            if ('fanPwmPct' in obj) {
+                document.getElementById('pwmSlide').value = obj.fanPwmPct;
+                document.getElementById('pwmPctText').innerHTML = "" + obj.fanPwmPct;
+            }
+
+            if ('fanSpeed' in obj) {
+                meter.value = obj.fanSpeed;
+                meter.draw();
+            }
+
+            if ('tempC' in obj) {
+                document.getElementById('tempC').innerHTML = "" + obj.tempC.toFixed(1);
+            }
+
+            if ('tempF' in obj) {
+                document.getElementById('tempF').innerHTML = "" + obj.tempF.toFixed(1);
+            }
+
+            if ('humidity' in obj) {
+                document.getElementById('humidity').innerHTML = "" + obj.humidity.toFixed(1);
+            }
+        }
+
+        // Called when a WebSocket error occurs
+        function onError(evt) {
+            console.log("ERROR: " + evt.data);
+        }
+
+        // Sends a message to the server (and prints it to the console)
+        function doSend(message) {
+            // console.log("Sending: " + message);
+            websocket.send(message);
+        }
+
+        function onFanSwitch() {
+            newValue = document.getElementById('fanOn').checked;
+            // console.log("newFanOn = " + newValue);
+            doSend("{ \"fanOn\": " + newValue + " }");
+        }
+
+        function onPwmChange() {
+            newValue = document.getElementById('pwmSlide').value;
+            // console.log("newPwmPct = " + newValue);
+            document.getElementById('pwmPctText').innerHTML = "" + newValue;
+            if (!pwmMouseDown) {
+                doSend("{ \"fanPwmPct\": " + newValue + " }");
+            }
+        }
+
+        function onPwmMouseDown() {
+            pwmMouseDown = true;
+        }
+
+        function onPwmMouseUp() {
+            pwmMouseDown = false;
+        }
+
+        window.addEventListener("load", init, false);
+    </script>
+
+
+</head>
+
+<body>
+    <div id="content">
+        <h1>Inverter/Battery Fan</h1>
+
+        <div class="fanSection">
+            <div class="leftSide">
+                <div class="labeledControl">
+                    <p>Power</p>
+                    <div class="pwrSwitch">
+                        <label class="switch">
+                            <input id="fanOn" type="checkbox" onchange="onFanSwitch()" oninput="onFanSwitch()">
+                            <span class="slider round"></span>
+                        </label>
+                    </div>
+                </div>
+                <div class="labeledControl">
+                    <p>Throttle</p>
+                    <div class="trackContainer"><input id="pwmSlide" class="track" type="range" min="0" max="100"
+                            value="50" onchange="onPwmChange()" oninput="onPwmChange()" onmousedown="onPwmMouseDown()"
+                            onmouseup="onPwmMouseUp()" ontouchstart="onPwmMouseDown()" ontouchend="onPwmMouseUp()">
+                    </div>
+                    <p><span class="value" id="pwmPctText">50</span><span class="units">%</span></p>
+                </div>
+                <div class="labeledControl">
+                    <div>Temperature</div>
+                    <div class="slashed">
+                        <div><span class="value" id="tempC">20</span><span class="units">&deg;C</span></div>
+                        <div class="slash">/</div>
+                        <div><span class="value" id="tempF">68</span><span class="units">&deg;F</span></div>
+                    </div>
+                </div>
+
+                <div class="labeledControl">
+                    <div>Humidity</div>
+                    <div><span class="value" id="humidity">16</span><span class="units">%</span></div>
+                </div>
+            </div>
+
+            <div class="fanRPM">
+                <canvas id="meterCanvas" width="250" height="250"></canvas>
+            </div>
+        </div>
+
+    </div>
+
+    <div class="linksCenter">
+        <a class="linkButton" href="fwupdate.html">Update Firmware</a>
+    </div>
+</body>
+
+</html>

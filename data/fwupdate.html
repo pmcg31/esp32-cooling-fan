@@ -1,0 +1,101 @@
+<html>
+
+<head>
+    <title>Inverter/Battery Fan Control</title>
+
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+
+    <link data-react-helmet="true" rel="preload" as="style"
+        href="https://fonts.googleapis.com/css?family=Dosis:300,500,700|Solway:300,700&amp;display=swap">
+    <link data-react-helmet="true"
+        href="https://fonts.googleapis.com/css?family=Dosis:300,500,700|Solway:300,700&amp;display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" type="text/css" href="style.css">
+
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
+
+</head>
+
+<body>
+    <div id="content" class="updateContent">
+        <h1>Firmware/File System Updater</h1>
+
+        <form class="formSection" method="POST" action="#" enctype="multipart/form-data" id="upload_form">
+            <label class="file">
+                <input type="file" id="file" name="update" aria-label="Select firmware or filesystem file">
+                <span id="file-name" class="file-custom">Choose File...</span>
+            </label>
+            <!-- <input class="fileInput" type="file" name="update"> -->
+            <div class="fsCheckBoxGroup">
+                <input class="fsCheckBox" type="checkbox" name="is_fs" id="is_fs">
+                <label class="fsCheckLabel" for="is_fs">This file is a file system update</label>
+            </div>
+            <div class="submitWrapper">
+                <input class="updateSubmit" type="submit" value="Update">
+            </div>
+        </form>
+
+        <div id="prg">progress: 0%</div>
+
+        <div class="links">
+            <a class="linkButton" href="/">Return to Home</a>
+        </div>
+    </div>
+</body>
+
+<script>
+    $("#file").on("change", function () {
+        console.log("onChange!");
+        filename = $(this).val();
+        lastPathIdx = filename.lastIndexOf("/");
+        if (lastPathIdx != -1) {
+            $("#file-name").html(filename.substr(lastPathIdx + 1));
+        } else {
+            lastPathIdx = filename.lastIndexOf("\\");
+            if (lastPathIdx != -1) {
+                $("#file-name").html(filename.substr(lastPathIdx + 1));
+            } else {
+                $("#file-name").html(filename);
+            }
+        }
+    })
+
+    $("form").submit(function (e) {
+        e.preventDefault();
+        console.log("Starting AJAX request");
+        var form = $("#upload_form")[0];
+        var data = new FormData(form);
+        var url = $("#is_fs").is(":checked") ? "/updatefs" : "/updatefw";
+        $.ajax({
+            url: url,
+            method: "POST",
+            data: data,
+            contentType: false,
+            processData: false,
+            xhr: function () {
+                var xhr = new window.XMLHttpRequest();
+                xhr.upload.addEventListener("progress", function (evt) {
+                    if (evt.lengthComputable) {
+                        var per = evt.loaded / evt.total;
+                        $("#prg").html("progress: " + Math.round(per * 100) + "%");
+                    }
+                }, false);
+                return xhr;
+            },
+            success: function (data, status) {
+                console.log("success!")
+                if (data.localeCompare("OK") == 0) {
+                    window.location.replace("/fwsuccess.html");
+                } else {
+                    // window.location.replace("/fwfail.html");
+                }
+            },
+            error: function (request, textStatus, errorThrown) {
+                console.log("error! textStatus: " + textStatus + " errorThrown: " + errorThrown);
+                // window.location.replace("/fwfail.html");
+            }
+        });
+    });
+</script>
+
+</html>
