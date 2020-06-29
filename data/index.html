@@ -63,7 +63,7 @@
                 chop = 8;
             } else {
                 // console.log("window.location.href is not an http URL");
-                document.getElementById('potVal').innerHTML = "<font color=\"red\">!! NO HOST !!</font>";
+                document.getElementById('error').innerHTML = "<font color=\"red\">!! NO HOST !!</font>";
             }
 
             if (chop != 0) {
@@ -79,7 +79,7 @@
                     wsConnect(url);
                 } else {
                     // console.log("Could not determine hostname from window.location.href");
-                    document.getElementById('potVal').innerHTML = "<font color=\"red\">!! NO HOST !!</font>";
+                    document.getElementById('error').innerHTML = "<font color=\"red\">!! NO HOST !!</font>";
                 }
             }
 
@@ -124,7 +124,16 @@
 
             // Print out our received message
             // console.log("Received: " + evt.data);
-            obj = JSON.parse(evt.data);
+            let obj = JSON.parse(evt.data);
+
+            if ('manualMode' in obj) {
+                setManualMode(obj.manualMode);
+            }
+
+            if ('setPoint' in obj) {
+                updateSetPoint(obj.setPoint);
+            }
+
             if ('fanOn' in obj) {
                 document.getElementById('fanOn').checked = obj.fanOn;
             }
@@ -163,6 +172,13 @@
             websocket.send(message);
         }
 
+        function onManualOverrideSwitch() {
+            newValue = document.getElementById('manualOverride').checked;
+            setManualMode(newValue);
+
+            doSend("{ \"manualMode\": " + newValue + " }");
+        }
+
         function onFanSwitch() {
             newValue = document.getElementById('fanOn').checked;
             // console.log("newFanOn = " + newValue);
@@ -178,12 +194,66 @@
             }
         }
 
+        function onSetPointChange() {
+            units = document.getElementById('setPointUnits').value;
+
+            newValue = document.getElementById('setPoint').value;
+
+            if (units === "f") {
+                newValue = (newValue - 32) * (5 / 9);
+            }
+
+            console.log("Sending new set point: " + newValue);
+            doSend("{ \"setPoint\": " + newValue + " }");
+        }
+
+        function onSetPointUnitsChange() {
+            oldValue = document.getElementById('setPointUnits').oldValue;
+            newValue = document.getElementById('setPointUnits').value;
+
+            if (oldValue !== newValue) {
+                setPoint = document.getElementById('setPoint').value;
+                if (newValue === "c") {
+                    setPoint = (setPoint - 32) * (5 / 9);
+                } else {
+                    setPoint = (setPoint * (9 / 5)) + 32;
+                }
+                document.getElementById('setPoint').value = setPoint;
+            }
+        }
+
         function onPwmMouseDown() {
             pwmMouseDown = true;
         }
 
         function onPwmMouseUp() {
             pwmMouseDown = false;
+        }
+
+        function setManualMode(manual) {
+            document.getElementById('manualOverride').checked = manual;
+
+            manualControls = document.getElementsByClassName("manualControls")[0];
+            automaticControls = document.getElementsByClassName("automaticControls")[0];
+
+            if (manual) {
+                automaticControls.setAttribute("hidden", "true");
+                manualControls.removeAttribute("hidden");
+            } else {
+                manualControls.setAttribute("hidden", "true");
+                automaticControls.removeAttribute("hidden");
+            }
+        }
+
+        function updateSetPoint(setPointC) {
+            newValue = document.getElementById('setPointUnits').value;
+
+            setPoint = setPointC;
+            if (newValue === "f") {
+                setPoint = (setPoint * (9 / 5)) + 32;
+            }
+
+            document.getElementById('setPoint').value = setPoint;
         }
 
         window.addEventListener("load", init, false);
@@ -198,23 +268,6 @@
 
         <div class="fanSection">
             <div class="leftSide">
-                <div class="labeledControl">
-                    <p>Power</p>
-                    <div class="pwrSwitch">
-                        <label class="switch">
-                            <input id="fanOn" type="checkbox" onchange="onFanSwitch()" oninput="onFanSwitch()">
-                            <span class="slider round"></span>
-                        </label>
-                    </div>
-                </div>
-                <div class="labeledControl">
-                    <p>Throttle</p>
-                    <div class="trackContainer"><input id="pwmSlide" class="track" type="range" min="0" max="100"
-                            value="50" onchange="onPwmChange()" oninput="onPwmChange()" onmousedown="onPwmMouseDown()"
-                            onmouseup="onPwmMouseUp()" ontouchstart="onPwmMouseDown()" ontouchend="onPwmMouseUp()">
-                    </div>
-                    <p><span class="value" id="pwmPctText">50</span><span class="units">%</span></p>
-                </div>
                 <div class="labeledControl">
                     <div>Temperature</div>
                     <div class="slashed">
@@ -235,11 +288,61 @@
             </div>
         </div>
 
+        <div class="controlSection">
+            <div class="controlMode">
+                <div class="labeledControl">
+                    <p>Manual Override</p>
+                    <div class="manualOverrideSwitch">
+                        <label class="switch">
+                            <input id="manualOverride" type="checkbox" onchange="onManualOverrideSwitch()"
+                                oninput="onManualOverrideSwitch()">
+                            <span class="slider round"></span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <div hidden="true" class="manualControls">
+                <div class="labeledControl">
+                    <p>Power</p>
+                    <div class="pwrSwitch">
+                        <label class="switch">
+                            <input id="fanOn" type="checkbox" onchange="onFanSwitch()" oninput="onFanSwitch()">
+                            <span class="slider round"></span>
+                        </label>
+                    </div>
+                </div>
+                <div class="labeledControl">
+                    <p>Throttle</p>
+                    <div class="trackContainer"><input id="pwmSlide" class="track" type="range" min="0" max="100"
+                            value="50" onchange="onPwmChange()" oninput="onPwmChange()" onmousedown="onPwmMouseDown()"
+                            onmouseup="onPwmMouseUp()" ontouchstart="onPwmMouseDown()" ontouchend="onPwmMouseUp()">
+                    </div>
+                    <p><span class="value" id="pwmPctText">50</span><span class="units">%</span></p>
+                </div>
+            </div>
+
+            <div class="automaticControls">
+                <div class="labeledControl">
+                    <p>Set Point</p>
+                    <input id="setPoint" type="text" onchange="onSetPointChange()" oninput="onSetPointChange()">
+                    <select id="setPointUnits" name="setPointUnits" onfocus="this.oldValue = this.value;"
+                        onchange="onSetPointUnitsChange();this.oldValue = this.value;"
+                        oninput="onSetPointUnitsChange();this.oldValue = this.value;">
+                        <option value="c">&deg;C</option>
+                        <option value="f">&deg;F</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
     </div>
 
     <div class="linksCenter">
         <a class="linkButton" href="fwupdate.html">Update Firmware</a>
     </div>
+
+    <div id="error" class="linksCenter"></div>
 </body>
 
 </html>

@@ -319,3 +319,7 @@ input:checked+.slider:before {
     color: coral;
     cursor: pointer;
 }
+
+div[hidden="true"] {
+    display: inherit;
+}

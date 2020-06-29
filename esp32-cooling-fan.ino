@@ -10,6 +10,7 @@
 #include <SPIFFS.h>
 #include <Arduino_JSON.h>
 #include <string.h>
+#include <PID_v1.h>
 #include "Adafruit_Si7021.h"
 
 void readConfig();
@@ -30,6 +31,8 @@ void IRAM_ATTR countTach();
 #define TACH_PIN 0
 #define PWM_PIN 2
 
+HardwareSerial &Debug = Serial2;
+
 int restartTimer = 0;
 
 const char *compileDate = __DATE__;
@@ -49,14 +52,26 @@ unsigned int tickCount = 0;
 
 volatile unsigned int tachCount = 0;
 
+bool manualMode = false;
+
 bool reportTemp = true;
 
 bool fanOn = true;
-unsigned int fanPWM = 255;
+unsigned int fanPWMPct = 100;
 unsigned int fanSpeedRPM = 0;
-float tempC = 0.0;
-float tempF = 0.0;
-float humidity = 0.0;
+double tempF = 0.0;
+double humidity = 0.0;
+
+double tempC = 0.0;
+double setPoint = 32.5;
+double kp = 5.0;
+double ki = 5.0;
+double kd = 1.0;
+double pidOutput = 30.0;
+
+PID pid(&tempC, &pidOutput, &setPoint, kp, ki, kd, REVERSE);
+
+int fanPctToPwm[101];
 
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
@@ -68,17 +83,22 @@ char loggerBuf[2048];
 int espLogger(const char *str, va_list vl)
 {
   vsprintf(loggerBuf, str, vl);
-  Serial2.println(loggerBuf);
+  Debug.println(loggerBuf);
 }
 
 void setup()
 {
-  Serial2.begin(115200);
-  Serial2.println("Booting");
-  Serial2.print("Compile date: ");
-  Serial2.println(compileDate);
-  Serial2.print("Compile time: ");
-  Serial2.println(compileTime);
+  Debug.begin(115200);
+  Debug.println("Booting");
+  Debug.print("Compile date: ");
+  Debug.println(compileDate);
+  Debug.print("Compile time: ");
+  Debug.println(compileTime);
+
+  for (int i = 0; i <= 100; i++)
+  {
+    fanPctToPwm[i] = (int)(((double)i / 100.0) * 255.0);
+  }
 
   esp_log_set_vprintf(espLogger);
 
@@ -100,13 +120,23 @@ void setup()
   ledcSetup(0, 25000, 8);
   ledcAttachPin(PWM_PIN, 0);
 
-  Serial2.println("Fan On!");
-  Serial2.print("fan duty cycle: ");
-  Serial2.println(fanPWM);
+  Debug.println("Fan On!");
+  Debug.print("fan pwm value: ");
+  Debug.println(fanPctToPwm[fanPWMPct]);
   syncValues();
 
   lastTachResetMillis = millis();
   attachInts();
+
+  pid.SetOutputLimits(0, 100);
+  if (manualMode)
+  {
+    pid.SetMode(MANUAL);
+  }
+  else
+  {
+    pid.SetMode(AUTOMATIC);
+  }
 }
 
 void loop()
@@ -133,7 +163,6 @@ void loop()
       revPerMillis /= 2;
       fanSpeedRPM = revPerMillis * 60000;
 
-      // DynamicJsonDocument doc(1024);
       JSONVar doc;
       doc["fanSpeed"] = (int)fanSpeedRPM;
 
@@ -145,11 +174,47 @@ void loop()
         doc["tempC"] = tempC;
         doc["tempF"] = tempF;
         doc["humidity"] = humidity;
+
+        if (!manualMode)
+        {
+          double tmp = pidOutput;
+          pid.Compute();
+
+          if (tmp != pidOutput)
+          {
+            if (pidOutput > 99.9)
+            {
+              fanPWMPct = 100;
+            }
+            else if (pidOutput < 0.1)
+            {
+              fanPWMPct = 0;
+            }
+            else
+            {
+              fanPWMPct = (int)pidOutput;
+            }
+
+            if (fanPWMPct < 10)
+            {
+              if (fanOn)
+              {
+                fanOn = false;
+              }
+            }
+            else
+            {
+              if (!fanOn)
+              {
+                fanOn = true;
+              }
+            }
+
+            syncValues();
+          }
+        }
       }
 
-      // char json[1024];
-      // serializeJsonPretty(doc, json);
-      // ws.textAll(json);
       ws.textAll(JSON.stringify(doc));
 
       if (restartTimer != 0)
@@ -157,12 +222,12 @@ void loop()
         restartTimer--;
         if (restartTimer == 0)
         {
-          Serial2.println("Restarting....");
+          Debug.println("Restarting....");
           ESP.restart();
         }
         else
         {
-          Serial2.printf("Restart in %d sec\r\n", restartTimer);
+          Debug.printf("Restart in %d sec\r\n", restartTimer);
         }
       }
     }
@@ -175,7 +240,7 @@ void readConfig()
 {
   if (!SPIFFS.begin(true))
   {
-    Serial2.println("An Error has occurred while mounting SPIFFS");
+    Debug.println("An Error has occurred while mounting SPIFFS");
     return;
   }
 
@@ -184,7 +249,7 @@ void readConfig()
   int cp = 0;
   if (!configFile)
   {
-    Serial2.println("Failed to open config.json for reading");
+    Debug.println("Failed to open config.json for reading");
     return;
   }
   else
@@ -198,15 +263,8 @@ void readConfig()
     JSONVar doc = JSON.parse(contents);
     if (JSON.typeof(doc) == "undefined")
     {
-      Serial2.println("Error parsing config.json");
+      Debug.println("Error parsing config.json");
     }
-    // DeserializationError error = deserializeJson(doc, configFile);
-    // if (error)
-    // {
-    //   Serial2.print("Error parsing config.json [");
-    //   Serial2.print(error.c_str());
-    //   Serial2.println("]");
-    // }
 
     strcpy(host, doc["host"]);
     strcpy(ssid, doc["ssid"]);
@@ -227,17 +285,23 @@ void syncValues()
     digitalWrite(FAN_ENABLE_PIN, LOW);
   }
 
-  ledcWrite(0, fanPWM);
+  ledcWrite(0, fanPctToPwm[fanPWMPct]);
 
-  // DynamicJsonDocument doc(1024);
+  if (manualMode)
+  {
+    pid.SetMode(MANUAL);
+  }
+  else
+  {
+    pid.SetMode(AUTOMATIC);
+  }
+
   JSONVar doc;
   doc["fanOn"] = fanOn;
-  doc["fanPwmPct"] = (int)((double)fanPWM * 100.0 / 255.0);
-  // char json[1024];
-  // serializeJsonPretty(doc, json);
-  // Serial2.print("Sending ");
-  // Serial2.println(json);
-  // ws.textAll(json);
+  doc["fanPwmPct"] = (int)fanPWMPct;
+  doc["manualMode"] = manualMode;
+  doc["setPoint"] = setPoint;
+
   ws.textAll(JSON.stringify(doc));
 }
 
@@ -249,28 +313,28 @@ void IRAM_ATTR countTach()
 void setupNetwork()
 {
   WiFi.mode(WIFI_STA);
-  Serial2.printf("Connecting to SSID \"%s\"\r\n", ssid);
+  Debug.printf("Connecting to SSID \"%s\"\r\n", ssid);
   WiFi.begin(ssid, password);
   while (WiFi.waitForConnectResult() != WL_CONNECTED)
   {
-    Serial2.println("Connection Failed! Rebooting...");
+    Debug.println("Connection Failed! Rebooting...");
     delay(5000);
     ESP.restart();
   }
 
   if (!MDNS.begin(host))
   {
-    Serial2.println("Error setting up MDNS responder!");
+    Debug.println("Error setting up MDNS responder!");
     while (1)
     {
       delay(1000);
     }
   }
-  Serial2.printf("mDNS responder started @ %s.local\r\n", host);
+  Debug.printf("mDNS responder started @ %s.local\r\n", host);
 
-  Serial2.println("Ready");
-  Serial2.print("IP address: ");
-  Serial2.println(WiFi.localIP());
+  Debug.println("Ready");
+  Debug.print("IP address: ");
+  Debug.println(WiFi.localIP());
 }
 
 void setupOTA()
@@ -298,27 +362,27 @@ void setupOTA()
           type = "filesystem";
 
         // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
-        Serial2.println("Start updating " + type);
+        Debug.println("Start updating " + type);
       })
       .onEnd([]() {
         attachInts();
-        Serial2.println("\nEnd");
+        Debug.println("\nEnd");
       })
       .onProgress([](unsigned int progress, unsigned int total) {
-        Serial2.printf("Progress: %u%%\r", (progress / (total / 100)));
+        Debug.printf("Progress: %u%%\r", (progress / (total / 100)));
       })
       .onError([](ota_error_t error) {
-        Serial2.printf("Error[%u]: ", error);
+        Debug.printf("Error[%u]: ", error);
         if (error == OTA_AUTH_ERROR)
-          Serial2.println("Auth Failed");
+          Debug.println("Auth Failed");
         else if (error == OTA_BEGIN_ERROR)
-          Serial2.println("Begin Failed");
+          Debug.println("Begin Failed");
         else if (error == OTA_CONNECT_ERROR)
-          Serial2.println("Connect Failed");
+          Debug.println("Connect Failed");
         else if (error == OTA_RECEIVE_ERROR)
-          Serial2.println("Receive Failed");
+          Debug.println("Receive Failed");
         else if (error == OTA_END_ERROR)
-          Serial2.println("End Failed");
+          Debug.println("End Failed");
       });
 
   ArduinoOTA.begin();
@@ -333,22 +397,22 @@ void setupTempSensor()
     {
       if (retryCount == 0)
       {
-        Serial2.println("Did not find Si7021 sensor! Giving up on it, no temp reporting this run");
+        Debug.println("Did not find Si7021 sensor! Giving up on it, no temp reporting this run");
         reportTemp = false;
         return;
       }
       else
       {
-        Serial2.print("Did not find Si7021 sensor! Will retry ");
-        Serial2.print(retryCount);
-        Serial2.print(" time");
+        Debug.print("Did not find Si7021 sensor! Will retry ");
+        Debug.print(retryCount);
+        Debug.print(" time");
         if (retryCount == 1)
         {
-          Serial2.println();
+          Debug.println();
         }
         else
         {
-          Serial2.println("s");
+          Debug.println("s");
         }
       }
 
@@ -356,31 +420,31 @@ void setupTempSensor()
     }
   }
 
-  Serial2.print("Found model ");
+  Debug.print("Found model ");
   switch (sensor.getModel())
   {
   case SI_Engineering_Samples:
-    Serial2.print("SI engineering samples");
+    Debug.print("SI engineering samples");
     break;
   case SI_7013:
-    Serial2.print("Si7013");
+    Debug.print("Si7013");
     break;
   case SI_7020:
-    Serial2.print("Si7020");
+    Debug.print("Si7020");
     break;
   case SI_7021:
-    Serial2.print("Si7021");
+    Debug.print("Si7021");
     break;
   case SI_UNKNOWN:
   default:
-    Serial2.print("Unknown");
+    Debug.print("Unknown");
   }
-  Serial2.print(" Rev(");
-  Serial2.print(sensor.getRevision());
-  Serial2.print(")");
-  Serial2.print(" Serial #");
-  Serial2.print(sensor.sernum_a, HEX);
-  Serial2.println(sensor.sernum_b, HEX);
+  Debug.print(" Rev(");
+  Debug.print(sensor.getRevision());
+  Debug.print(")");
+  Debug.print(" Serial #");
+  Debug.print(sensor.sernum_a, HEX);
+  Debug.println(sensor.sernum_b, HEX);
 }
 
 void handleUpdateFW(AsyncWebServerRequest *request)
@@ -394,28 +458,28 @@ void handleUploadFW(AsyncWebServerRequest *request, String filename, size_t inde
   if (!index)
   {
     detachInts();
-    Serial2.printf("FW Update: %s\r\n", filename.c_str());
+    Debug.printf("FW Update: %s\r\n", filename.c_str());
     if (!Update.begin(UPDATE_SIZE_UNKNOWN))
     { //start with max available size
-      Update.printError(Serial2);
+      Update.printError(Debug);
     }
   }
 
   /* flashing firmware to ESP*/
   if (Update.write(data, len) != len)
   {
-    Update.printError(Serial2);
+    Update.printError(Debug);
   }
 
   if (final)
   {
     if (Update.end(true))
     { //true to set the size to the current progress
-      Serial2.printf("FW Update Success: %s %u\r\n", filename.c_str(), index + len);
+      Debug.printf("FW Update Success: %s %u\r\n", filename.c_str(), index + len);
     }
     else
     {
-      Update.printError(Serial2);
+      Update.printError(Debug);
     }
 
     attachInts();
@@ -433,28 +497,28 @@ void handleUploadFS(AsyncWebServerRequest *request, String filename, size_t inde
   if (!index)
   {
     detachInts();
-    Serial2.printf("FS Update: %s\r\n", filename.c_str());
+    Debug.printf("FS Update: %s\r\n", filename.c_str());
     if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_SPIFFS))
     { //start with max available size
-      Update.printError(Serial2);
+      Update.printError(Debug);
     }
   }
 
   /* flashing firmware to ESP*/
   if (Update.write(data, len) != len)
   {
-    Update.printError(Serial2);
+    Update.printError(Debug);
   }
 
   if (final)
   {
     if (Update.end(true))
     { //true to set the size to the current progress
-      Serial2.printf("FS Update Success: %s %u\r\n", filename.c_str(), index + len);
+      Debug.printf("FS Update Success: %s %u\r\n", filename.c_str(), index + len);
     }
     else
     {
-      Update.printError(Serial2);
+      Update.printError(Debug);
     }
 
     attachInts();
@@ -472,23 +536,23 @@ void onWSEvent(AsyncWebSocket *server,
   {
   case WS_EVT_CONNECT:
   {
-    Serial2.println("WS client connect");
-    // DynamicJsonDocument doc(1024);
+    Debug.println("WS client connect");
+
     JSONVar doc;
     doc["fanOn"] = fanOn;
-    doc["fanPwmPct"] = (int)((double)fanPWM * 100.0 / 255.0);
+    doc["fanPwmPct"] = (int)fanPWMPct;
     doc["fanSpeed"] = (int)fanSpeedRPM;
     doc["tempC"] = tempC;
     doc["tempF"] = tempF;
     doc["humidity"] = humidity;
-    // char json[1024];
-    // serializeJsonPretty(doc, json);
-    // client->text(json);
+    doc["manualMode"] = manualMode;
+    doc["setPoint"] = setPoint;
+
     client->text(JSON.stringify(doc));
   }
   break;
   case WS_EVT_DISCONNECT:
-    Serial2.println("WS client disconnect");
+    Debug.println("WS client disconnect");
     break;
   case WS_EVT_DATA:
   {
@@ -498,26 +562,33 @@ void onWSEvent(AsyncWebSocket *server,
       if (info->opcode == WS_TEXT)
       {
         data[length] = 0;
-        Serial2.print("data is ");
-        Serial2.println((char *)data);
-        // DynamicJsonDocument doc(1024);
-        // deserializeJson(doc, (char *)data);
+        Debug.print("data is ");
+        Debug.println((char *)data);
+
         JSONVar doc = JSON.parse((char *)data);
         bool update = false;
 
-        // if (doc.containsKey("fanOn"))
         if (doc.hasOwnProperty("fanOn"))
         {
           fanOn = doc["fanOn"];
           update = true;
         }
 
-        // if (doc.containsKey("fanPwmPct"))
         if (doc.hasOwnProperty("fanPwmPct"))
         {
-          int pct = doc["fanPwmPct"];
-          fanPWM = (int)((double)pct * 255.0 / 100.0);
+          fanPWMPct = (int)doc["fanPwmPct"];
           update = true;
+        }
+
+        if (doc.hasOwnProperty("manualMode"))
+        {
+          manualMode = doc["manualMode"];
+          update = true;
+        }
+
+        if (doc.hasOwnProperty("setPoint"))
+        {
+          setPoint = doc[setPoint];
         }
 
         if (update)
@@ -527,12 +598,12 @@ void onWSEvent(AsyncWebSocket *server,
       }
       else
       {
-        Serial2.println("Received a ws message, but it isn't text");
+        Debug.println("Received a ws message, but it isn't text");
       }
     }
     else
     {
-      Serial2.println("Received a ws message, but it didn't fit into one frame");
+      Debug.println("Received a ws message, but it didn't fit into one frame");
     }
   }
   break;
