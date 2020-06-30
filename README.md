@@ -28,9 +28,9 @@ You will need:
 
 You need the [Arduino IDE](https://www.arduino.cc/en/main/software), of course. It must be set up for ESP32 development, including the sketch data uploader. Check out [my guide](https://ideaup.online/blog/esp32-set-up-on-arduino/) if you need help!
 
-You will also need the ESPAsyncWebServer and ESPAsyncTCP libraries. I have a [guide to downloading and setting those up](https://ideaup.online/blog/esp32-webserver-with-websockets/), too!
+You will also need the ArduinoJSON, ESPAsyncWebServer, and ESPAsyncTCP libraries. I have a [guide to downloading and setting all those up](https://ideaup.online/blog/esp32-webserver-with-websockets/), too!
 
-Finally you will need the `Arduino_JSON` library, the `Adafruit Si7021 Library` and the `PID` library. All are available from the Arduino Library Manager in the Arduino IDE. I don't have a guide for these yet, but installation is easy. Click on `Tools` and then `Libraries...` in the IDE. This will bring up the library manager. Search for each of the libraries above by name, and install the latest version by clicking the `Install` button that appears when you hover over the library in the list. That's it!
+Finally you will need the `Adafruit Si7021 Library` and the `PID` library. Both are available from the Arduino Library Manager in the Arduino IDE. I don't have a guide for these yet, but installation is easy. Click on `Tools` and then `Libraries...` in the IDE. This will bring up the library manager. Search for each of the libraries above by name, and install the latest version by clicking the `Install` button that appears when you hover over the library in the list. That's it!
 
 ## 🧩 Getting set up
 

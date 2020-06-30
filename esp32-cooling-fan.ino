@@ -8,7 +8,7 @@
 #include <Update.h>
 #include <FS.h>
 #include <SPIFFS.h>
-#include <Arduino_JSON.h>
+#include <ArduinoJson.h>
 #include <string.h>
 #include <PID_v1.h>
 #include "Adafruit_Si7021.h"
@@ -31,9 +31,10 @@ void IRAM_ATTR countTach();
 #define TACH_PIN 0
 #define PWM_PIN 2
 
-HardwareSerial &Debug = Serial2;
+HardwareSerial &Debug = Serial;
 
 int restartTimer = 0;
+int nanCount = 0;
 
 const char *compileDate = __DATE__;
 const char *compileTime = __TIME__;
@@ -52,7 +53,7 @@ unsigned int tickCount = 0;
 
 volatile unsigned int tachCount = 0;
 
-bool manualMode = false;
+bool manualMode = true;
 
 bool reportTemp = true;
 
@@ -63,9 +64,9 @@ double tempF = 0.0;
 double humidity = 0.0;
 
 double tempC = 0.0;
-double setPoint = 32.5;
-double kp = 5.0;
-double ki = 5.0;
+double setPoint = 32.0;
+double kp = 80.0;
+double ki = 1.5;
 double kd = 1.0;
 double pidOutput = 30.0;
 
@@ -128,7 +129,7 @@ void setup()
   lastTachResetMillis = millis();
   attachInts();
 
-  pid.SetOutputLimits(0, 100);
+  pid.SetOutputLimits(9, 100);
   if (manualMode)
   {
     pid.SetMode(MANUAL);
@@ -152,6 +153,110 @@ void loop()
     millisCount += lastReportMillis - millisStart;
     tickCount++;
 
+    tempC = sensor.readTemperature();
+    humidity = sensor.readHumidity();
+
+    bool ohNoNAN = false;
+    if (isnan(tempC))
+    {
+      Debug.println("temp is NAN!");
+      ohNoNAN = true;
+    }
+
+    if (isnan(humidity))
+    {
+      Debug.println("humidity is NAN!");
+      ohNoNAN = true;
+    }
+
+    if (ohNoNAN)
+    {
+      return;
+    }
+
+    tempF = (tempC * 9 / 5) + 32;
+
+    if (!manualMode)
+    {
+      bool update = false;
+      double tmp = pidOutput;
+      pid.Compute();
+
+      if (tmp != pidOutput)
+      {
+        // Debug.print("pidOutput changed: ");
+        // Debug.println(pidOutput);
+
+        if (isnan(pidOutput))
+        {
+          Debug.println("pidOutput is NAN!");
+          nanCount++;
+          if (nanCount > 10)
+          {
+            ESP.restart();
+          }
+        }
+
+        if (pidOutput > 99.9)
+        {
+          Debug.println("hard roll 100%");
+          unsigned int oldFanPWMPct = fanPWMPct;
+          fanPWMPct = 100;
+
+          if (fanPWMPct != oldFanPWMPct)
+          {
+            update = true;
+          }
+        }
+        else if (pidOutput < 0.1)
+        {
+          Debug.println("hard roll 0%");
+          unsigned int oldFanPWMPct = fanPWMPct;
+          fanPWMPct = 0;
+
+          if (fanPWMPct != oldFanPWMPct)
+          {
+            update = true;
+          }
+        }
+        else
+        {
+          unsigned int oldFanPWMPct = fanPWMPct;
+          fanPWMPct = (int)pidOutput;
+
+          if (fanPWMPct != oldFanPWMPct)
+          {
+            update = true;
+          }
+
+          // Debug.print("double --> int: ");
+          // Debug.println(fanPWMPct);
+        }
+
+        if (fanPWMPct < 10)
+        {
+          if (fanOn)
+          {
+            fanOn = false;
+            update = true;
+          }
+        }
+        else
+        {
+          if (!fanOn)
+          {
+            fanOn = true;
+            update = true;
+          }
+        }
+
+        if (update)
+        {
+          syncValues();
+        }
+      }
+    }
+
     if (tickCount % 10 == 0)
     {
       int lastTachCount = tachCount;
@@ -163,59 +268,19 @@ void loop()
       revPerMillis /= 2;
       fanSpeedRPM = revPerMillis * 60000;
 
-      JSONVar doc;
+      DynamicJsonDocument doc(1024);
       doc["fanSpeed"] = (int)fanSpeedRPM;
 
       if (reportTemp)
       {
-        tempC = sensor.readTemperature();
-        tempF = (tempC * 9 / 5) + 32;
-        humidity = sensor.readHumidity();
         doc["tempC"] = tempC;
         doc["tempF"] = tempF;
         doc["humidity"] = humidity;
-
-        if (!manualMode)
-        {
-          double tmp = pidOutput;
-          pid.Compute();
-
-          if (tmp != pidOutput)
-          {
-            if (pidOutput > 99.9)
-            {
-              fanPWMPct = 100;
-            }
-            else if (pidOutput < 0.1)
-            {
-              fanPWMPct = 0;
-            }
-            else
-            {
-              fanPWMPct = (int)pidOutput;
-            }
-
-            if (fanPWMPct < 10)
-            {
-              if (fanOn)
-              {
-                fanOn = false;
-              }
-            }
-            else
-            {
-              if (!fanOn)
-              {
-                fanOn = true;
-              }
-            }
-
-            syncValues();
-          }
-        }
       }
 
-      ws.textAll(JSON.stringify(doc));
+      char json[2048];
+      serializeJsonPretty(doc, json);
+      ws.textAll(json);
 
       if (restartTimer != 0)
       {
@@ -245,25 +310,21 @@ void readConfig()
   }
 
   File configFile = SPIFFS.open("/config.json", "r");
-  char contents[1024];
-  int cp = 0;
+  DynamicJsonDocument doc(1024);
   if (!configFile)
   {
-    Debug.println("Failed to open config.json for reading");
+    Serial.println("Failed to open config.json for reading");
     return;
   }
   else
   {
-    while (configFile.available())
+    DeserializationError error = deserializeJson(doc, configFile);
+    if (error)
     {
-      contents[cp] = configFile.read();
-      cp++;
-    }
-
-    JSONVar doc = JSON.parse(contents);
-    if (JSON.typeof(doc) == "undefined")
-    {
-      Debug.println("Error parsing config.json");
+      Debug.print("Error parsing config.json [");
+      Debug.print(error.c_str());
+      Debug.println("]");
+      return;
     }
 
     strcpy(host, doc["host"]);
@@ -296,13 +357,15 @@ void syncValues()
     pid.SetMode(AUTOMATIC);
   }
 
-  JSONVar doc;
+  DynamicJsonDocument doc(1024);
   doc["fanOn"] = fanOn;
   doc["fanPwmPct"] = (int)fanPWMPct;
   doc["manualMode"] = manualMode;
   doc["setPoint"] = setPoint;
 
-  ws.textAll(JSON.stringify(doc));
+  char json[4096];
+  serializeJsonPretty(doc, json);
+  ws.textAll(json);
 }
 
 void IRAM_ATTR countTach()
@@ -442,7 +505,7 @@ void setupTempSensor()
   Debug.print(" Rev(");
   Debug.print(sensor.getRevision());
   Debug.print(")");
-  Debug.print(" Serial #");
+  Debug.print(" Debug #");
   Debug.print(sensor.sernum_a, HEX);
   Debug.println(sensor.sernum_b, HEX);
 }
@@ -538,7 +601,7 @@ void onWSEvent(AsyncWebSocket *server,
   {
     Debug.println("WS client connect");
 
-    JSONVar doc;
+    DynamicJsonDocument doc(1024);
     doc["fanOn"] = fanOn;
     doc["fanPwmPct"] = (int)fanPWMPct;
     doc["fanSpeed"] = (int)fanSpeedRPM;
@@ -548,7 +611,9 @@ void onWSEvent(AsyncWebSocket *server,
     doc["manualMode"] = manualMode;
     doc["setPoint"] = setPoint;
 
-    client->text(JSON.stringify(doc));
+    char json[4096];
+    serializeJsonPretty(doc, json);
+    client->text(json);
   }
   break;
   case WS_EVT_DISCONNECT:
@@ -565,30 +630,39 @@ void onWSEvent(AsyncWebSocket *server,
         Debug.print("data is ");
         Debug.println((char *)data);
 
-        JSONVar doc = JSON.parse((char *)data);
+        DynamicJsonDocument doc(1024);
+        DeserializationError error = deserializeJson(doc, data);
+        if (error)
+        {
+          Debug.print("Error parsing config.json [");
+          Debug.print(error.c_str());
+          Debug.println("]");
+          return;
+        }
+
         bool update = false;
 
-        if (doc.hasOwnProperty("fanOn"))
+        if (doc.containsKey("fanOn"))
         {
           fanOn = doc["fanOn"];
           update = true;
         }
 
-        if (doc.hasOwnProperty("fanPwmPct"))
+        if (doc.containsKey("fanPwmPct"))
         {
           fanPWMPct = (int)doc["fanPwmPct"];
           update = true;
         }
 
-        if (doc.hasOwnProperty("manualMode"))
+        if (doc.containsKey("manualMode"))
         {
           manualMode = doc["manualMode"];
           update = true;
         }
 
-        if (doc.hasOwnProperty("setPoint"))
+        if (doc.containsKey("setPoint"))
         {
-          setPoint = doc[setPoint];
+          setPoint = doc["setPoint"];
         }
 
         if (update)
